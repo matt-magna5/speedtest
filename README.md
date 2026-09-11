@@ -1,10 +1,9 @@
 # speedtest
 
-A PowerShell script that aggregates internet speed measurements across
-multiple independent, official speed-test providers and reports a
-per-provider and overall average. Built to measure actual circuit/line-rate
-capacity (multi-gig connections included), not "how fast does one browser
-tab feel."
+A PowerShell script that tests internet speed across multiple independent,
+official speed-test providers/servers and reports the **peak (best) result
+recorded** — not an average. The goal is "what is this circuit's actual max
+throughput," which one congested or off-path run shouldn't drag down.
 
 ## Run it
 
@@ -17,15 +16,20 @@ No install needed — the first run downloads two small official CLI tools into
 
 ## What it tests
 
-Each provider is run 5 times (configurable) and averaged:
-
 | Provider | How | Notes |
 |---|---|---|
-| **[Ookla Speedtest CLI](https://www.speedtest.net/apps/cli)** | Official binary from `install.speedtest.net` | Auto-picks the nearest server from Ookla's global network — for many residential ISPs (Spectrum confirmed) that **is** the ISP's own tester: `speedtest.spectrum.net` itself runs on this same Ookla white-label network. The script flags it in the output when this happens, e.g. `[your ISP's own server: Spectrum]`. |
-| **[LibreSpeed CLI](https://github.com/librespeed/speedtest-cli)** | Official binary, fetched from GitHub's latest release | Tests against LibreSpeed.org's public server list — independent infrastructure from Ookla, also nearest-server/regional. |
+| **[Ookla Speedtest CLI](https://www.speedtest.net/apps/cli)** | Official binary from `install.speedtest.net` | Tests the **3 nearest datacenters** (by Ookla's own distance ranking), **5 runs each** — 15 runs total, all configurable. After the first server's runs reveal your ISP (free, from the result's own `isp` field), the script checks whether your ISP's own white-labeled Ookla server (e.g. `speedtest.spectrum.net` runs on this same network) is already in that set — if not, it's added automatically, so it's never left to chance that "nearest by distance" happens to skip it. Matched runs are tagged `[your ISP's own server: X]`. |
+| **[LibreSpeed CLI](https://github.com/librespeed/speedtest-cli)** | Official binary, fetched from GitHub's latest release | Tests against LibreSpeed.org's public server list — independent infrastructure from Ookla, nearest-server auto-selected, 5 runs. |
 
 Both use multiple parallel TCP streams internally, which is what it actually
 takes to measure line-rate capacity on a fast (multi-gig) connection.
+
+## Output
+
+- **Per-provider PEAK** — the single best download/upload result and best
+  (lowest) ping seen for that provider across all its runs.
+- **OVERALL PEAK** — the single best result across every server and run, plus
+  which server produced it.
 
 ## What it deliberately skips, and why
 
@@ -51,11 +55,11 @@ takes to measure line-rate capacity on a fast (multi-gig) connection.
 ## Usage
 
 ```powershell
-# Default: 5 runs per provider
+# Default: top 3 Ookla servers + LibreSpeed, 5 runs each
 .\Test-InternetSpeed.ps1
 
-# Fewer runs for a quicker check
-.\Test-InternetSpeed.ps1 -Runs 3
+# Test more/fewer Ookla datacenters, or change the run count
+.\Test-InternetSpeed.ps1 -OoklaServerCount 5 -Runs 3
 
 # Skip a provider
 .\Test-InternetSpeed.ps1 -SkipOokla
