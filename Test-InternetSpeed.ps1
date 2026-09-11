@@ -9,27 +9,39 @@
       - Ookla Speedtest CLI  (official binary, install.speedtest.net)
                              -> auto-picks the nearest server from Ookla's global
                                 network, which includes ISP-operated servers
-                                (e.g. Spectrum runs its own Ookla-compatible server).
+                                (e.g. speedtest.spectrum.net runs on this same
+                                Ookla network - when Ookla picks that server,
+                                that IS the ISP's own tester, not a proxy for it).
       - LibreSpeed CLI       (official binary, github.com/librespeed/speedtest-cli)
                              -> tests against LibreSpeed.org's public server list,
                                 independent infrastructure from Ookla.
-      - Cloudflare           (no binary - plain timed HTTP GET/POST against
-                                speed.cloudflare.com, Cloudflare's own public,
-                                documented speed-test endpoints)
 
-    Deliberately excludes speedtest.net-style scraping (Ookla's Terms of Service
-    prohibit automated/bulk access to the website itself - this script instead
-    uses their *official* CLI, which is fine) and fast.com (Netflix publishes no
-    public API; the only way to use it is scraping an undocumented token, which
-    is unsupported and can break at any time). It also skips M-Lab's ndt7 client
-    because M-Lab does not publish an official Windows binary and the common
-    third-party prebuilt one has multiple antivirus false-positive reports -
-    not something to have a public script silently download and execute.
+    Both providers use multiple parallel TCP streams internally, which is required
+    to measure actual circuit/line-rate capacity on fast (multi-gig) connections -
+    that's the goal of this script, not "how fast does one browser tab feel."
+
+    Deliberately excludes:
+      - speedtest.net-style scraping of the website itself (Ookla's Terms of Service
+        prohibit automated/bulk access to it - the official CLI above is the
+        sanctioned way to get the same data).
+      - fast.com (Netflix publishes no public API; the only way to use it is
+        scraping an undocumented token, which is unsupported and can break anytime).
+      - M-Lab's ndt7 client (no official Windows binary, and the common third-party
+        prebuilt one has multiple antivirus false-positive reports).
+      - Cloudflare's speed.cloudflare.com. Their public test is intentionally a
+        SINGLE TCP stream (it's meant to emulate one web page load, not measure raw
+        pipe capacity), so on a multi-gig connection it systematically reads far
+        below actual line rate - not a fluke, a documented design choice. Forcing
+        it into a multi-stream test by hammering their endpoint with many parallel
+        curl processes was tried and rejected: past ~8-12 concurrent streams it
+        started failing outright (0 Mbps / timeouts), almost certainly Cloudflare
+        rate-limiting that endpoint per client. It's not built for this and can't
+        be made to do it reliably, so it's cut rather than shipped as noisy data.
 
 .PARAMETER Runs
     Number of test iterations per provider (default 5).
 
-.PARAMETER SkipOokla / SkipLibreSpeed / SkipCloudflare
+.PARAMETER SkipOokla / SkipLibreSpeed
     Skip an individual provider.
 
 .EXAMPLE
@@ -42,8 +54,7 @@
 param(
     [int]$Runs = 5,
     [switch]$SkipOokla,
-    [switch]$SkipLibreSpeed,
-    [switch]$SkipCloudflare
+    [switch]$SkipLibreSpeed
 )
 
 $ErrorActionPreference = 'Stop'
@@ -74,9 +85,16 @@ function Invoke-OoklaTest {
     param($ExePath)
     $raw = & $ExePath --accept-license --accept-gdpr -f json 2>$null | Select-Object -Last 1
     $json = $raw | ConvertFrom-Json
+    # Ookla auto-picks the nearest server by latency, which for most residential ISPs
+    # (Spectrum/Charter confirmed; many others too) IS the ISP's own white-labeled
+    # Ookla server - e.g. speedtest.spectrum.net runs on this same Ookla network.
+    # Flag it when that's what happened, since that's as "local ISP tester" as it gets.
+    $ispServer = $json.isp -and $json.server.name -and ($json.server.name -like "*$($json.isp)*")
     [PSCustomObject]@{
         Provider     = 'Ookla'
         Server       = "$($json.server.name) ($($json.server.location))"
+        ISP          = $json.isp
+        ISPOperated  = [bool]$ispServer
         PingMs       = [math]::Round($json.ping.latency, 1)
         DownloadMbps = [math]::Round(($json.download.bandwidth * 8 / 1MB), 2)
         UploadMbps   = [math]::Round(($json.upload.bandwidth * 8 / 1MB), 2)
@@ -115,48 +133,6 @@ function Invoke-LibreSpeedTest {
 }
 
 # ---------------------------------------------------------------------------
-# Cloudflare - plain timed HTTP against speed.cloudflare.com (no binary needed)
-# ---------------------------------------------------------------------------
-function Get-CurlExe {
-    # curl.exe ships built into Windows 10 (1803+) / Windows 11. Invoke-WebRequest
-    # buffers/parses the whole response in PowerShell, which adds enough overhead
-    # to badly undercount high-speed connections - curl.exe measures the raw
-    # transfer instead, same as the reference timings this script was validated against.
-    $cmd = Get-Command curl.exe -ErrorAction SilentlyContinue
-    if (-not $cmd) { throw "curl.exe not found (expected built into Windows 10 1803+/11)." }
-    return $cmd.Source
-}
-
-function Invoke-CloudflareTest {
-    $curl = Get-CurlExe
-
-    $downBytes = 25000000
-    $downOut = & $curl -s -o NUL -w "%{size_download} %{time_total}" "https://speed.cloudflare.com/__down?bytes=$downBytes"
-    $downParts = $downOut -split '\s+'
-    $downMbps = [math]::Round(([double]$downParts[0] * 8 / 1MB) / [double]$downParts[1], 2)
-
-    $upBytes = 5000000
-    $upFile = Join-Path $env:TEMP "cf_upload_payload.bin"
-    if (-not (Test-Path $upFile)) {
-        $payload = New-Object byte[] $upBytes
-        (New-Object Random).NextBytes($payload)
-        [System.IO.File]::WriteAllBytes($upFile, $payload)
-    }
-    $upTime = & $curl -s -o NUL -w "%{time_total}" -X POST --data-binary "@$upFile" "https://speed.cloudflare.com/__up"
-    $upMbps = [math]::Round(($upBytes * 8 / 1MB) / [double]$upTime, 2)
-
-    $pingTime = & $curl -s -o NUL -w "%{time_total}" "https://speed.cloudflare.com/__down?bytes=0"
-
-    [PSCustomObject]@{
-        Provider     = 'Cloudflare'
-        Server       = 'speed.cloudflare.com'
-        PingMs       = [math]::Round([double]$pingTime * 1000, 1)
-        DownloadMbps = $downMbps
-        UploadMbps   = $upMbps
-    }
-}
-
-# ---------------------------------------------------------------------------
 # Run everything
 # ---------------------------------------------------------------------------
 $allResults = @()
@@ -168,7 +144,8 @@ if (-not $SkipOokla) {
         for ($i = 1; $i -le $Runs; $i++) {
             Write-Host "  Run $i/$Runs..." -NoNewline
             $r = Invoke-OoklaTest -ExePath $exe
-            Write-Host (" {0} Mbps down / {1} Mbps up / {2} ms" -f $r.DownloadMbps, $r.UploadMbps, $r.PingMs)
+            $tag = if ($r.ISPOperated) { " [your ISP's own server: $($r.ISP)]" } else { "" }
+            Write-Host (" {0} Mbps down / {1} Mbps up / {2} ms - {3}{4}" -f $r.DownloadMbps, $r.UploadMbps, $r.PingMs, $r.Server, $tag)
             $allResults += $r
         }
     } catch {
@@ -183,27 +160,11 @@ if (-not $SkipLibreSpeed) {
         for ($i = 1; $i -le $Runs; $i++) {
             Write-Host "  Run $i/$Runs..." -NoNewline
             $r = Invoke-LibreSpeedTest -ExePath $exe
-            Write-Host (" {0} Mbps down / {1} Mbps up / {2} ms" -f $r.DownloadMbps, $r.UploadMbps, $r.PingMs)
+            Write-Host (" {0} Mbps down / {1} Mbps up / {2} ms - {3}" -f $r.DownloadMbps, $r.UploadMbps, $r.PingMs, $r.Server)
             $allResults += $r
         }
     } catch {
         Write-Warning "LibreSpeed test skipped: $_"
-    }
-}
-
-if (-not $SkipCloudflare) {
-    Write-Section "Cloudflare x$Runs"
-    try {
-        for ($i = 1; $i -le $Runs; $i++) {
-            Write-Host "  Run $i/$Runs..." -NoNewline
-            $r = Invoke-CloudflareTest
-            Write-Host (" {0} Mbps down / {1} Mbps up / {2} ms" -f $r.DownloadMbps, $r.UploadMbps, $r.PingMs)
-            $allResults += $r
-        }
-    } catch {
-        Write-Warning "Cloudflare test skipped: $_"
-    } finally {
-        Remove-Item (Join-Path $env:TEMP "cf_upload_payload.bin") -Force -ErrorAction SilentlyContinue
     }
 }
 
