@@ -5,7 +5,7 @@
     speed-test providers and reports a per-provider and overall average.
 
 .DESCRIPTION
-    Runs each of the following N times (default 3) and averages the results:
+    Runs each of the following N times (default 5) and averages the results:
       - Ookla Speedtest CLI  (official binary, install.speedtest.net)
                              -> auto-picks the nearest server from Ookla's global
                                 network, which includes ISP-operated servers
@@ -27,20 +27,20 @@
     not something to have a public script silently download and execute.
 
 .PARAMETER Runs
-    Number of test iterations per provider (default 3).
+    Number of test iterations per provider (default 5).
 
 .PARAMETER SkipOokla / SkipLibreSpeed / SkipCloudflare
     Skip an individual provider.
 
 .EXAMPLE
-    irm https://raw.githubusercontent.com/<you>/<repo>/main/Test-InternetSpeed.ps1 | iex
+    irm https://raw.githubusercontent.com/matt-magna5/speedtest/main/Test-InternetSpeed.ps1 | iex
 
 .EXAMPLE
-    .\Test-InternetSpeed.ps1 -Runs 5
+    .\Test-InternetSpeed.ps1 -Runs 3
 #>
 [CmdletBinding()]
 param(
-    [int]$Runs = 3,
+    [int]$Runs = 5,
     [switch]$SkipOokla,
     [switch]$SkipLibreSpeed,
     [switch]$SkipCloudflare

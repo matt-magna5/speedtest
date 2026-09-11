@@ -15,7 +15,7 @@ No install needed — the first run downloads two small official CLI tools into
 
 ## What it tests
 
-Each provider is run 3 times (configurable) and averaged:
+Each provider is run 5 times (configurable) and averaged:
 
 | Provider | How | Notes |
 |---|---|---|
@@ -38,11 +38,11 @@ Each provider is run 3 times (configurable) and averaged:
 ## Usage
 
 ```powershell
-# Default: 3 runs per provider
+# Default: 5 runs per provider
 .\Test-InternetSpeed.ps1
 
-# More runs for a more thorough average
-.\Test-InternetSpeed.ps1 -Runs 5
+# Fewer runs for a quicker check
+.\Test-InternetSpeed.ps1 -Runs 3
 
 # Skip a provider
 .\Test-InternetSpeed.ps1 -SkipOokla
